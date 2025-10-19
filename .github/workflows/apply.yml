@@ -1,7 +1,7 @@
 name: Apply /apply patch
 on:
   issue_comment:
-    types: [created]
+    types: [created, edited]   # сработает и на редактирование комментария
 
 permissions:
   contents: write
@@ -9,29 +9,52 @@ permissions:
 
 jobs:
   run:
-    if: startsWith(github.event.comment.body, '/apply ')
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
 
-      - name: Extract title and diff
-        id: extract
+    steps:
+      - name: Detect /apply and extract diff
+        id: detect
         env:
           BODY: ${{ github.event.comment.body }}
         run: |
-          TITLE="$(printf "%s" "$BODY" | head -n1 | sed -E 's#^/apply[[:space:]]*##')"
-          echo "title=$TITLE" >> $GITHUB_OUTPUT
-          # Берём первый блок ```diff ... ```
+          set -e
+          # убираем BOM/пробелы в начале первой строки
+          body="$(printf "%s" "$BODY" | sed '1s/^[[:space:]\ufeff]*//')"
+          first="$(printf "%s" "$body" | head -n1)"
+
+          case "$first" in
+            "/apply"|"\/apply" ) title="";;
+            "/apply "* ) title="${first#/apply }";;
+            * )
+              echo "no /apply command on first line"
+              echo "ok=false" >> $GITHUB_OUTPUT
+              exit 0
+              ;;
+          esac
+
+          echo "ok=true" >> $GITHUB_OUTPUT
+          printf 'title=%s\n' "$title" >> $GITHUB_OUTPUT
+
+          # достаём первый блок ```diff ... ```
           awk '
             tolower($0) ~ /^```[[:space:]]*diff[[:space:]]*$/ && !in {in=1; next}
             /^```/ && in {in=0; exit}
             in {print}
-          ' <<< "$BODY" > patch.diff
-          test -s patch.diff || { echo "No diff block found"; exit 1; }
-          head -n 20 patch.diff
+          ' <<< "$body" > patch.diff
+
+          if [ ! -s patch.diff ]; then
+            echo "no diff block found"
+            echo "ok=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.detect.outputs.ok == 'true'
+        with:
+          fetch-depth: 0
 
       - name: Apply and commit
+        if: steps.detect.outputs.ok == 'true'
         run: |
           set -euxo pipefail
           BR="chatgpt/apply-${{ github.event.comment.id }}"
@@ -41,14 +64,15 @@ jobs:
           git apply --check --whitespace=fix patch.diff
           git apply --whitespace=fix patch.diff
           git add -A
-          git commit -m "${{ steps.extract.outputs.title }}"
+          git commit -m "${{ steps.detect.outputs.title || 'apply patch' }}"
 
       - name: Open draft PR
+        if: steps.detect.outputs.ok == 'true'
         uses: peter-evans/create-pull-request@v6
         with:
-          title: ${{ steps.extract.outputs.title }}
-          commit-message: ${{ steps.extract.outputs.title }}
+          title: ${{ steps.detect.outputs.title || 'apply patch' }}
+          commit-message: ${{ steps.detect.outputs.title || 'apply patch' }}
           branch: chatgpt/apply-${{ github.event.comment.id }}
-          base: main
+          base: ${{ github.event.repository.default_branch }}
           draft: true
           body: Automated from ${{ github.event.comment.html_url }}
