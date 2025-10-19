@@ -2,9 +2,11 @@ name: Apply /apply patch
 on:
   issue_comment:
     types: [created]
+
 permissions:
   contents: write
   pull-requests: write
+
 jobs:
   run:
     if: startsWith(github.event.comment.body, '/apply ')
@@ -12,13 +14,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
-      - id: x
+
+      - name: Extract title and diff
+        id: extract
+        env:
+          BODY: ${{ github.event.comment.body }}
         run: |
-          BODY="${{ github.event.comment.body }}"
           TITLE="$(printf "%s" "$BODY" | head -n1 | sed -E 's#^/apply[[:space:]]*##')"
-          printf 'title=%s\n' "$TITLE" >> $GITHUB_OUTPUT
-          awk '/```diff/{f=1;next} /```/{if(f){exit}} f' <<< "$BODY" > patch.diff
-      - run: |
+          echo "title=$TITLE" >> $GITHUB_OUTPUT
+          # Берём первый блок ```diff ... ```
+          awk '
+            tolower($0) ~ /^```[[:space:]]*diff[[:space:]]*$/ && !in {in=1; next}
+            /^```/ && in {in=0; exit}
+            in {print}
+          ' <<< "$BODY" > patch.diff
+          test -s patch.diff || { echo "No diff block found"; exit 1; }
+          head -n 20 patch.diff
+
+      - name: Apply and commit
+        run: |
           set -euxo pipefail
           BR="chatgpt/apply-${{ github.event.comment.id }}"
           git switch -c "$BR"
@@ -27,11 +41,13 @@ jobs:
           git apply --check --whitespace=fix patch.diff
           git apply --whitespace=fix patch.diff
           git add -A
-          git commit -m "${{ steps.x.outputs.title }}"
-      - uses: peter-evans/create-pull-request@v6
+          git commit -m "${{ steps.extract.outputs.title }}"
+
+      - name: Open draft PR
+        uses: peter-evans/create-pull-request@v6
         with:
-          title: ${{ steps.x.outputs.title }}
-          commit-message: ${{ steps.x.outputs.title }}
+          title: ${{ steps.extract.outputs.title }}
+          commit-message: ${{ steps.extract.outputs.title }}
           branch: chatgpt/apply-${{ github.event.comment.id }}
           base: main
           draft: true
