@@ -1,7 +1,7 @@
 name: Apply /apply patch
 on:
   issue_comment:
-    types: [created, edited]   # перезапустится и при редактировании комментария
+    types: [created, edited]
 
 permissions:
   contents: write
@@ -17,30 +17,24 @@ jobs:
           BODY: ${{ github.event.comment.body }}
         run: |
           set -e
-          # убираем возможный BOM/пробелы в начале
           body="$(printf "%s" "$BODY" | sed '1s/^[[:space:]\ufeff]*//')"
           first="$(printf "%s" "$body" | head -n1)"
-
           case "$first" in
-            "/apply"|"/apply "* ) title="${first#/apply }" ;;
-            * ) echo "ok=false" >> $GITHUB_OUTPUT; exit 0 ;;
+            "/apply"|"/apply "*) title="${first#/apply }" ;;
+            *) echo "ok=false" >> $GITHUB_OUTPUT; exit 0 ;;
           esac
-
           echo "ok=true" >> $GITHUB_OUTPUT
           printf 'title=%s\n' "$title" >> $GITHUB_OUTPUT
 
-          # достаём первый блок ```diff ... ```
+          # пишем патч во временную директорию, которую checkout не трогает
           awk '
             tolower($0) ~ /^```[[:space:]]*diff[[:space:]]*$/ && !inside {inside=1; next}
             /^```/ && inside {inside=0; exit}
             inside {print}
-          ' <<< "$body" > patch.diff
+          ' <<< "$body" > "$RUNNER_TEMP/patch.diff"
 
-          if [ ! -s patch.diff ]; then
-            echo "No diff block found"
-            echo "ok=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
+          [ -s "$RUNNER_TEMP/patch.diff" ] || { echo "ok=false" >> $GITHUB_OUTPUT; exit 0; }
+          echo "patch=$RUNNER_TEMP/patch.diff" >> $GITHUB_OUTPUT
 
       - uses: actions/checkout@v4
         if: steps.detect.outputs.ok == 'true'
@@ -49,16 +43,19 @@ jobs:
 
       - name: Apply and commit
         if: steps.detect.outputs.ok == 'true'
+        env:
+          PATCH: ${{ steps.detect.outputs.patch }}
+          TITLE: ${{ steps.detect.outputs.title }}
         run: |
           set -euxo pipefail
           BR="chatgpt/apply-${{ github.event.comment.id }}"
           git switch -c "$BR"
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git apply --check --whitespace=fix patch.diff
-          git apply --whitespace=fix patch.diff
+          git apply --check --whitespace=fix "$PATCH"
+          git apply --whitespace=fix "$PATCH"
           git add -A
-          git commit -m "${{ steps.detect.outputs.title || 'apply patch' }}"
+          git commit -m "${TITLE:-apply patch}"
 
       - name: Open draft PR
         if: steps.detect.outputs.ok == 'true'
