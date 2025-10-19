@@ -1,0 +1,38 @@
+name: Apply /apply patch
+on:
+  issue_comment:
+    types: [created]
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  run:
+    if: startsWith(github.event.comment.body, '/apply ')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - id: x
+        run: |
+          BODY="${{ github.event.comment.body }}"
+          TITLE="$(printf "%s" "$BODY" | head -n1 | sed -E 's#^/apply[[:space:]]*##')"
+          printf 'title=%s\n' "$TITLE" >> $GITHUB_OUTPUT
+          awk '/```diff/{f=1;next} /```/{if(f){exit}} f' <<< "$BODY" > patch.diff
+      - run: |
+          set -euxo pipefail
+          BR="chatgpt/apply-${{ github.event.comment.id }}"
+          git switch -c "$BR"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git apply --check --whitespace=fix patch.diff
+          git apply --whitespace=fix patch.diff
+          git add -A
+          git commit -m "${{ steps.x.outputs.title }}"
+      - uses: peter-evans/create-pull-request@v6
+        with:
+          title: ${{ steps.x.outputs.title }}
+          commit-message: ${{ steps.x.outputs.title }}
+          branch: chatgpt/apply-${{ github.event.comment.id }}
+          base: main
+          draft: true
+          body: Automated from ${{ github.event.comment.html_url }}
