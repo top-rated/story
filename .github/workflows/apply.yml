@@ -26,7 +26,7 @@ jobs:
           echo "ok=true" >> $GITHUB_OUTPUT
           printf 'title=%s\n' "$title" >> $GITHUB_OUTPUT
 
-          # пишем патч во временную директорию, которую checkout не трогает
+          # вытащить первый ```diff ... ``` блок в безопасное место
           awk '
             tolower($0) ~ /^```[[:space:]]*diff[[:space:]]*$/ && !inside {inside=1; next}
             /^```/ && inside {inside=0; exit}
@@ -48,22 +48,32 @@ jobs:
           TITLE: ${{ steps.detect.outputs.title }}
         run: |
           set -euxo pipefail
-          BR="chatgpt/apply-${{ github.event.comment.id }}"
-          git switch -c "$BR"
+          BRANCH="chatgpt/apply-${{ github.event.comment.id }}"
+          git switch -c "$BRANCH"
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git apply --check --whitespace=fix "$PATCH"
           git apply --whitespace=fix "$PATCH"
           git add -A
           git commit -m "${TITLE:-apply patch}"
+          git push -u origin "$BRANCH"
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
 
       - name: Open draft PR
         if: steps.detect.outputs.ok == 'true'
-        uses: peter-evans/create-pull-request@v6
+        uses: actions/github-script@v7
+        env:
+          TITLE: ${{ steps.detect.outputs.title }}
+          BRANCH: ${{ steps.apply-and-commit.outputs.branch }}
         with:
-          title: ${{ steps.detect.outputs.title || 'apply patch' }}
-          commit-message: ${{ steps.detect.outputs.title || 'apply patch' }}
-          branch: chatgpt/apply-${{ github.event.comment.id }}
-          base: ${{ github.event.repository.default_branch }}
-          draft: true
-          body: Automated from ${{ github.event.comment.html_url }}
+          script: |
+            const title = process.env.TITLE || 'apply patch';
+            const head  = core.getInput('BRANCH', { required: false }) || process.env.BRANCH;
+            const base  = context.payload.repository.default_branch;
+            const body  = `Automated from ${context.payload.comment.html_url}`;
+            const res = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title, head, base, body, draft: true
+            });
+            core.info(`PR: ${res.data.html_url}`);
