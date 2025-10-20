@@ -7,16 +7,9 @@ permissions:
   contents: write
   pull-requests: write
 
-concurrency:
-  group: apply-main
-  cancel-in-progress: false
-
 jobs:
   run:
     runs-on: ubuntu-latest
-    # Разрешить только участникам репозитория:
-    if: contains(fromJson('["MEMBER","OWNER","COLLABORATOR"]'), github.event.comment.author_association)
-
     steps:
       - name: Parse command and extract diff
         id: detect
@@ -32,17 +25,20 @@ jobs:
           esac
           echo "ok=true" >> $GITHUB_OUTPUT
           printf 'title=%s\n' "$title" >> $GITHUB_OUTPUT
+
           awk '
             tolower($0) ~ /^```[[:space:]]*diff[[:space:]]*$/ && !inside {inside=1; next}
             /^```/ && inside {inside=0; exit}
             inside {print}
           ' <<< "$body" > "$RUNNER_TEMP/patch.diff"
+
           [ -s "$RUNNER_TEMP/patch.diff" ] || { echo "ok=false" >> $GITHUB_OUTPUT; exit 0; }
           printf 'patch=%s\n' "$RUNNER_TEMP/patch.diff" >> $GITHUB_OUTPUT
 
       - uses: actions/checkout@v4
         if: steps.detect.outputs.ok == 'true'
-        with: { fetch-depth: 0 }
+        with:
+          fetch-depth: 0
 
       - name: Commit directly to default branch
         if: steps.detect.outputs.ok == 'true'
@@ -67,28 +63,28 @@ jobs:
             echo "pushed=false" >> $GITHUB_OUTPUT
           fi
 
-      # Fallback: если пуш в main запрещён — уходим в единый PR "chatgpt/apply"
       - name: Fallback: push to global branch
-        if: steps.detect.outputs.ok == 'true' && steps.commit_main.outputs.pushed == 'false'
+        if: steps.commit_main.outputs.pushed == 'false'
         run: |
           set -euxo pipefail
           git switch -c chatgpt/apply || git switch chatgpt/apply
           git push -u origin chatgpt/apply
 
       - name: Open or update draft PR (fallback)
-        if: steps.detect.outputs.ok == 'true' && steps.commit_main.outputs.pushed == 'false'
+        if: steps.commit_main.outputs.pushed == 'false'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const owner = context.repo.owner, repo = context.repo.repo;
+            const owner = context.repo.owner;
+            const repo  = context.repo.repo;
             const head  = 'chatgpt/apply';
             const base  = context.payload.repository.default_branch;
-            const prs = await github.rest.pulls.list({ owner, repo, state: 'open', head: `${owner}:${head}` });
-            if (prs.data.length === 0) {
+            const list = await github.rest.pulls.list({ owner, repo, state: 'open', head: `${owner}:${head}` });
+            if (list.data.length === 0) {
               await github.rest.pulls.create({
                 owner, repo, title: 'ChatGPT Apply (global PR)',
                 head, base, draft: true,
-                body: 'Глобальный PR: коммиты приходят из /apply-main при запрете пуша в main.'
+                body: 'Глобальный PR: изменения из /apply-main.'
               });
             }
