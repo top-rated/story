@@ -1,7 +1,9 @@
 name: Apply /apply-main to default branch
 on:
   issue_comment:
-    types: [created, edited]
+    types:
+      - created
+      - edited
 
 permissions:
   contents: write
@@ -15,16 +17,17 @@ jobs:
         id: detect
         env:
           BODY: ${{ github.event.comment.body }}
+        shell: bash
         run: |
           set -e
-          body="$(printf "%s" "$BODY" | sed '1s/^[[:space:]\ufeff]*//')"
+          body="$(printf "%s" "$BODY" | sed '1s/^[[:space:]]*//')"
           first="$(printf "%s" "$body" | head -n1)"
           case "$first" in
             "/apply-main"|"/apply-main "*) title="${first#/apply-main }" ;;
-            *) echo "ok=false" >> $GITHUB_OUTPUT; exit 0 ;;
+            *) echo "ok=false" >> "$GITHUB_OUTPUT"; exit 0 ;;
           esac
-          echo "ok=true" >> $GITHUB_OUTPUT
-          printf 'title=%s\n' "$title" >> $GITHUB_OUTPUT
+          echo "ok=true" >> "$GITHUB_OUTPUT"
+          printf 'title=%s\n' "$title" >> "$GITHUB_OUTPUT"
 
           awk '
             tolower($0) ~ /^```[[:space:]]*diff[[:space:]]*$/ && !inside {inside=1; next}
@@ -32,20 +35,25 @@ jobs:
             inside {print}
           ' <<< "$body" > "$RUNNER_TEMP/patch.diff"
 
-          [ -s "$RUNNER_TEMP/patch.diff" ] || { echo "ok=false" >> $GITHUB_OUTPUT; exit 0; }
-          printf 'patch=%s\n' "$RUNNER_TEMP/patch.diff" >> $GITHUB_OUTPUT
+          if [ ! -s "$RUNNER_TEMP/patch.diff" ]; then
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          printf 'patch=%s\n' "$RUNNER_TEMP/patch.diff" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v4
+      - name: Checkout
         if: steps.detect.outputs.ok == 'true'
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Commit directly to default branch
         if: steps.detect.outputs.ok == 'true'
         id: commit_main
+        shell: bash
         env:
-          PATCH:   ${{ steps.detect.outputs.patch }}
-          TITLE:   ${{ steps.detect.outputs.title }}
+          PATCH: ${{ steps.detect.outputs.patch }}
+          TITLE: ${{ steps.detect.outputs.title }}
           DEFAULT: ${{ github.event.repository.default_branch }}
         run: |
           set -euxo pipefail
@@ -58,20 +66,21 @@ jobs:
           git add -A
           git commit -m "${TITLE:-apply patch}"
           if git push origin "HEAD:$DEFAULT"; then
-            echo "pushed=true" >> $GITHUB_OUTPUT
+            echo "pushed=true" >> "$GITHUB_OUTPUT"
           else
-            echo "pushed=false" >> $GITHUB_OUTPUT
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Fallback: push to global branch
-        if: steps.commit_main.outputs.pushed == 'false'
+        if: steps.detect.outputs.ok == 'true' && steps.commit_main.outputs.pushed == 'false'
+        shell: bash
         run: |
           set -euxo pipefail
           git switch -c chatgpt/apply || git switch chatgpt/apply
           git push -u origin chatgpt/apply
 
       - name: Open or update draft PR (fallback)
-        if: steps.commit_main.outputs.pushed == 'false'
+        if: steps.detect.outputs.ok == 'true' && steps.commit_main.outputs.pushed == 'false'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -80,8 +89,8 @@ jobs:
             const repo  = context.repo.repo;
             const head  = 'chatgpt/apply';
             const base  = context.payload.repository.default_branch;
-            const list = await github.rest.pulls.list({ owner, repo, state: 'open', head: `${owner}:${head}` });
-            if (list.data.length === 0) {
+            const prs = await github.rest.pulls.list({ owner, repo, state: 'open', head: `${owner}:${head}` });
+            if (prs.data.length === 0) {
               await github.rest.pulls.create({
                 owner, repo, title: 'ChatGPT Apply (global PR)',
                 head, base, draft: true,
