@@ -15,9 +15,9 @@ jobs:
     steps:
       - name: Parse command and extract diff
         id: detect
+        shell: bash
         env:
           BODY: ${{ github.event.comment.body }}
-        shell: bash
         run: |
           set -e
           body="$(printf "%s" "$BODY" | sed '1s/^[[:space:]]*//')"
@@ -42,13 +42,13 @@ jobs:
           printf 'patch=%s\n' "$RUNNER_TEMP/patch.diff" >> "$GITHUB_OUTPUT"
 
       - name: Checkout
-        if: steps.detect.outputs.ok == 'true'
+        if: ${{ steps.detect.outputs.ok == 'true' }}
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Commit directly to default branch
-        if: steps.detect.outputs.ok == 'true'
+        if: ${{ steps.detect.outputs.ok == 'true' }}
         id: commit_main
         shell: bash
         env:
@@ -72,7 +72,7 @@ jobs:
           fi
 
       - name: Fallback: push to global branch
-        if: steps.detect.outputs.ok == 'true' && steps.commit_main.outputs.pushed == 'false'
+        if: ${{ steps.commit_main.outputs.pushed == 'false' }}
         shell: bash
         run: |
           set -euxo pipefail
@@ -80,7 +80,7 @@ jobs:
           git push -u origin chatgpt/apply
 
       - name: Open or update draft PR (fallback)
-        if: steps.detect.outputs.ok == 'true' && steps.commit_main.outputs.pushed == 'false'
+        if: ${{ steps.commit_main.outputs.pushed == 'false' }}
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
