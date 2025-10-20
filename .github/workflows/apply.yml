@@ -25,21 +25,17 @@ jobs:
           esac
           echo "ok=true" >> $GITHUB_OUTPUT
           printf 'title=%s\n' "$title" >> $GITHUB_OUTPUT
-
-          # вытащить первый блок ```diff ... ```
           awk '
             tolower($0) ~ /^```[[:space:]]*diff[[:space:]]*$/ && !inside {inside=1; next}
             /^```/ && inside {inside=0; exit}
             inside {print}
           ' <<< "$body" > "$RUNNER_TEMP/patch.diff"
-
           [ -s "$RUNNER_TEMP/patch.diff" ] || { echo "ok=false" >> $GITHUB_OUTPUT; exit 0; }
           printf 'patch=%s\n' "$RUNNER_TEMP/patch.diff" >> $GITHUB_OUTPUT
 
       - uses: actions/checkout@v4
         if: steps.detect.outputs.ok == 'true'
-        with:
-          fetch-depth: 0
+        with: { fetch-depth: 0 }
 
       - name: Apply and commit
         if: steps.detect.outputs.ok == 'true'
@@ -49,8 +45,8 @@ jobs:
           TITLE: ${{ steps.detect.outputs.title }}
         run: |
           set -euxo pipefail
-          BR="chatgpt/apply-${{ github.event.comment.id }}"
-          git switch -c "$BR"
+          BR="chatgpt/apply-issue-${{ github.event.issue.number }}"
+          git switch -c "$BR" || git switch "$BR"
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git apply --check --whitespace=fix "$PATCH"
@@ -60,23 +56,30 @@ jobs:
           git push -u origin "$BR"
           echo "branch=$BR" >> $GITHUB_OUTPUT
 
-      - name: Open draft PR
+      - name: Open draft PR (create once per issue)
         if: steps.detect.outputs.ok == 'true'
         uses: actions/github-script@v7
         env:
-          TITLE: ${{ steps.detect.outputs.title }}
-          HEAD: ${{ steps.apply.outputs.branch }}
+          TITLE:  ${{ steps.detect.outputs.title }}
+          BRANCH: ${{ steps.apply.outputs.branch }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const title = process.env.TITLE || 'apply patch';
-            const head  = process.env.HEAD;
-            if (!head) throw new Error('HEAD branch is empty');
-            const base  = context.payload.repository.default_branch;
-            const body  = `Automated from ${context.payload.comment.html_url}`;
-            const res = await github.rest.pulls.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title, head, base, body, draft: true
+            const branch = process.env.BRANCH;
+            const headQualified = `${context.repo.owner}:${branch}`;
+            // есть ли уже PR с этой веткой?
+            const list = await github.rest.pulls.list({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', head: headQualified
             });
-            core.info(`PR: ${res.data.html_url}`);
+            if (list.data.length) {
+              core.info(`PR already exists: ${list.data[0].html_url}`);
+            } else {
+              const res = await github.rest.pulls.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, head: branch, base: context.payload.repository.default_branch,
+                body: `Automated from ${context.payload.comment.html_url}`, draft: true
+              });
+              core.info(`PR created: ${res.data.html_url}`);
+            }
