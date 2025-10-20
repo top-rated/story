@@ -1,0 +1,7 @@
+diff --git a/apply-test.txt b/apply-test.txt
+new file mode 100644
+--- /dev/null
++++ b/apply-test.txt
+@@ -0,0 +1 @@
++OK: committed straight to main
+
