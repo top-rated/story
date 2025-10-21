@@ -1,4 +1,4 @@
-name: Apply /apply-main (direct to default branch or PR for workflows)
+name: Apply /apply-main (safe capture; PR for workflows)
 
 on:
   issue_comment:
@@ -21,25 +21,33 @@ jobs:
       - name: Determine default branch
         run: echo "DEFAULT=${{ github.event.repository.default_branch }}" >> $GITHUB_ENV
 
-      - name: Parse comment → patch + title
+      - name: Parse comment → patch + title (heredoc, no eval)
         id: parse
         shell: bash
         run: |
           set -euo pipefail
-          printf "%s" "${{ github.event.comment.body }}" > comment.txt
-
-          TITLE_RAW="$(head -n1 comment.txt)"
+          # Write raw comment body to file WITHOUT shell interpolation (single-quoted heredoc)
+          cat > comment.txt <<'COMMENT_EOF'
+${{ github.event.comment.body }}
+COMMENT_EOF
+          # First line for title
+          TITLE_RAW="$(head -n1 comment.txt || true)"
           TITLE="${TITLE_RAW#'/apply-main '}"
-          if [ -z "$TITLE" ] || [ "$TITLE" = "/apply-main" ]; then
+          if [ -z "${TITLE:-}" ] || [ "${TITLE:-}" = "/apply-main" ]; then
             TITLE="apply patch from /apply-main"
           fi
           echo "TITLE=$TITLE" >> $GITHUB_ENV
 
-          # Extract fenced diff block
-          awk 'BEGIN{code=0}                /^```diff/{code=1;next}                /^```/{if(code){code=0;exit}}                code{print}' comment.txt > patch.diff
+          # Extract fenced ```diff ... ``` into patch.diff
+          awk 'BEGIN{code=0}                /^```diff[[:space:]]*$/ {code=1; next}                /^```[[:space:]]*$/ { if(code){ code=0; exit } }                code { print }' comment.txt > patch.diff
 
           if [ ! -s patch.diff ]; then
-            echo "::error::No ```diff fenced block found in comment"
+            echo "::error::No fenced ```diff block found in the comment."
+            echo "Ensure the comment has exactly one block like:"
+            echo "/apply-main <title>"
+            echo "\`\`\`diff"
+            echo "<unified git diff>"
+            echo "\`\`\`"
             exit 1
           fi
 
@@ -52,8 +60,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Collect target paths from diff headers
-          grep -E '^diff --git a/.+ b/.+' patch.diff | sed -E 's#^diff --git a/[^ ]+ b/##' > files.txt
+          # Collect target paths from diff headers (b/<path> after diff --git a/... b/...)
+          sed -n -E 's/^diff --git a\/[^ ]+ b\/(.+)$/\1/p' patch.diff > files.txt || true
           if grep -qE '^\.github/workflows/' files.txt; then
             echo "TOUCHES_WORKFLOWS=true" >> $GITHUB_ENV
           else
