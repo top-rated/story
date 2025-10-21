@@ -1,7 +1,124 @@
-diff --git a/APPLY_OK.txt b/APPLY_OK.txt
+diff --git a/README.md b/README.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..9766475a4185a151dc9d56d614ffb9aaea3bfd42
 --- /dev/null
-+++ b/APPLY_OK.txt
++++ b/README.md
+@@ -0,0 +7 @@
++# Existential Companion — Story Builder (GCP)
++
++Минимальный каркас приложения (без изменения существующих workflows).
++
++## Файлы
++- `app/main.py`, `app/config.py`, `app/__init__.py`
++- `.env.example`, `requirements.txt`, `.gitignore`, `README.md`
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +21 @@
++__pycache__/
++*.py[cod]
++.venv/
++venv/
++env/
++build/
++dist/
++*.egg-info/
++.pytest_cache/
++.coverage
++.mypy_cache/
++.ruff_cache/
++.idea/
++.vscode/
++.DS_Store
++.env
++.env.*
++*.key.json
++service-account.json
++credentials.json
++*.log
+diff --git a/.env.example b/.env.example
+new file mode 100644
+--- /dev/null
++++ b/.env.example
+@@ -0,0 +6 @@
++GCP_PROJECT_ID=your-gcp-project-id
++TEMPLATE_DOC_ID=1pcDRA-PfSyhsYO7ikT_JGQeHopFHsLzLZcDybWvf5wA
++GOOGLE_APPLICATION_CREDENTIALS=/workspace/keys/service-account.json
++GUMROAD_WEBHOOK_SECRET=replace-me
++PEECHO_API_KEY=replace-me
++BASE_URL=https://story.being.marketing
+diff --git a/app/__init__.py b/app/__init__.py
+new file mode 100644
+--- /dev/null
++++ b/app/__init__.py
 @@ -0,0 +1 @@
-+ok
++# Empty package initializer
+diff --git a/app/config.py b/app/config.py
+new file mode 100644
+--- /dev/null
++++ b/app/config.py
+@@ -0,0 +13 @@
++from dataclasses import dataclass
++import os
++
++@dataclass
++class Settings:
++    gcp_project_id: str = os.getenv("GCP_PROJECT_ID", "")
++    template_doc_id: str = os.getenv("TEMPLATE_DOC_ID", "1pcDRA-PfSyhsYO7ikT_JGQeHopFHsLzLZcDybWvf5wA")
++    google_application_credentials: str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
++    gumroad_webhook_secret: str = os.getenv("GUMROAD_WEBHOOK_SECRET", "")
++    peecho_api_key: str = os.getenv("PEECHO_API_KEY", "")
++    base_url: str = os.getenv("BASE_URL", "")
++
++settings = Settings()
+diff --git a/app/main.py b/app/main.py
+new file mode 100644
+--- /dev/null
++++ b/app/main.py
+@@ -0,0 +31 @@
++from flask import Flask, jsonify, request
++from .config import settings
++
++app = Flask(__name__)
++
++@app.get("/healthz")
++def healthz():
++    return jsonify(status="ok", template=settings.template_doc_id), 200
++
++@app.post("/api/v1/create_book")
++def create_book():
++    payload = request.get_json(silent=True) or {}
++    return jsonify(status="not_implemented", received=payload), 202
++
++@app.post("/api/v1/gumroad/webhook")
++def gumroad_webhook():
++    data = request.get_json(silent=True) or {}
++    return jsonify(status="not_implemented", event=data.get("event")), 202
++
++@app.post("/api/v1/peecho/quote")
++def peecho_quote():
++    req = request.get_json(silent=True) or {}
++    return jsonify(status="not_implemented", request=req), 202
++
++@app.post("/api/v1/test/format")
++def test_format():
++    sample = request.get_json(silent=True) or {}
++    return jsonify(status="not_implemented", received=sample), 202
++
++if __name__ == "__main__":
++    app.run(host="0.0.0.0", port=8080, debug=True)
+diff --git a/requirements.txt b/requirements.txt
+new file mode 100644
+--- /dev/null
++++ b/requirements.txt
+@@ -0,0 +10 @@
++Flask>=3.0.0
++google-api-python-client>=2.141.0
++google-auth>=2.34.0
++google-auth-httplib2>=0.2.0
++google-auth-oauthlib>=1.2.1
++google-cloud-translate>=3.16.0
++google-cloud-storage>=2.18.2
++requests>=2.32.3
++pydantic>=2.9.0
++gunicorn>=22.0.0
