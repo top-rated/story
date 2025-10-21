@@ -1,1 +1,10 @@
-APPLY_OK.txt
+README.md
+docs/ARCHITECTURE.md
+docs/DEPLOYMENT.md
+server/requirements.txt
+server/Dockerfile
+.env.example
+server/config.py
+server/models.py
+server/google_api.py
+server/main.py

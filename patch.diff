@@ -1,7 +1,529 @@
-diff --git a/APPLY_OK.txt b/APPLY_OK.txt
+diff --git a/README.md b/README.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..9766475a4185a151dc9d56d614ffb9aaea3bfd42
+index 0000000000000000000000000000000000000000..230dbbd44be825a155cdbd6b77cde9ec3946f694
 --- /dev/null
-+++ b/APPLY_OK.txt
-@@ -0,0 +1 @@
-+ok
++++ b/README.md
+@@ -0,0 +19 @@
++# Existential Companion — Story Builder (MVP scaffolding)
++
++This repository contains the Google Cloud app that the custom GPT will call to create and manage a Google Doc-based workbook for an autobiographical book or memoir.
++
++> You paste the patches from Chat into a GitHub issue comment. Your repo has a workflow that applies unified diffs from issue comments to `main`.
++
++---
++
++## What’s included (this patch)
++- **FastAPI app** with two endpoints to be called by GPT actions:
++  - `POST /api/create_book_with_content` — create Google Doc from template, fill placeholders, append chapters/questions (and optional answers).
++  - `POST /api/create_book_link` — create Google Doc from template and return the editor link (content is added later).
++- **Google APIs helpers** (Docs, Drive, Translate) — *stubs with clear TODOs*.
++- **Architecture & Deployment docs** with step-by-step UI instructions (no terminal needed).
++- **`.env.example`** listing the required secrets and IDs (no secrets checked in).
++- **Dockerfile** and `requirements.txt` for Cloud Run.
++
++> Nothing in this patch requires running code locally. You can deploy from the GCP Console UI later.
++
+diff --git a/docs/ARCHITECTURE.md b/docs/ARCHITECTURE.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..890011ac6372d308bd2f4b84536b53ea1e7b5b22
+--- /dev/null
++++ b/docs/ARCHITECTURE.md
+@@ -0,0 +35 @@
++# Architecture (MVP)
++
++## High-level
++The system has two parts:
++
++1) **Custom GPT** (chat side)
++   - Gathers user intent in their language.
++   - Generates title/author, starter questions, chapters, and optionally answers.
++   - Creates 2–3 cover images in chat (A4 portrait) and asks the user to download one.
++   - Calls the Google Cloud app action **after** the first structure is ready.
++
++2) **Google Cloud app** (this repo → Cloud Run)
++   - Exposes HTTPS endpoints for GPT actions.
++   - Creates a Google Doc from the template and fills placeholders `{{TITLE}}`, `{{AUTHOR}}`, `<TITLE>`, `<AUTHOR>`.
++   - Adds content: H1 sections for ToC, starting prompts, chapters with open questions (and optional answers).
++   - Translates all template/memo text to the user’s language using Cloud Translate (except the strings `being.marketing` and `Share Your Being`).
++   - Returns the **memo tab** link `https://docs.google.com/document/d/<DOC_ID>/edit?tab=t.0` back to chat.
++   - Provides a **validation endpoint** to check structure/formatting.
++   - (Later) Handles **Gumroad** purchase webhooks (digital & print) and updates Google Doc permissions.
++   - (Later) Handles **Peecho** quote/order for print; generates a print‑ready PDF (book tab only) with blank pages per Peecho spec.
++
++## Google ownership
++The app must act **as** `shareyourbeing@gmail.com` so that newly created Google Docs are owned by that account.
++- Use an OAuth client with `offline` access and store a **refresh token** for `shareyourbeing@gmail.com` in secrets.
++- The Cloud Run service will exchange the refresh token for access tokens at runtime.
++
++## Key documents
++- **Template Doc** (provided): will be referenced by its `TEMPLATE_DOC_ID` from environment.
++- Newly created Docs preserve the two-tab (book/memo) layout from the template. Placeholders are replaced, and content is appended in the book tab.
++
++## Endpoints (initial)
++- `POST /api/create_book_with_content`
++- `POST /api/create_book_link`
++- `GET  /api/validate/{doc_id}` — runs non-destructive checks and returns a JSON report.
++
+diff --git a/docs/DEPLOYMENT.md b/docs/DEPLOYMENT.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..fe3e845f7bb42a661cb7b9d1ed1806245e6ec84e
+--- /dev/null
++++ b/docs/DEPLOYMENT.md
+@@ -0,0 +32 @@
++# Deploy to Google Cloud Run (UI-only steps)
++
++> No terminal needed. Everything is clickable from the Google Cloud Console.
++
++## Prerequisites
++1. A Google Cloud project (or create one).
++2. The Gmail account `shareyourbeing@gmail.com` (this will own created Docs).
++3. Enable these APIs in **APIs & Services → Enable APIs**:
++   - Google Docs API
++   - Google Drive API
++   - Cloud Translation API
++4. In **APIs & Services → Credentials**:
++   - Create **OAuth 2.0 Client ID** (Desktop application is fine for obtaining a refresh token once).
++   - Create **OAuth 2.0 Client ID** (Web application) for Cloud Run if you prefer; both work as long as you have an **offline refresh token**.
++   - Obtain an **offline refresh token** for `shareyourbeing@gmail.com` (once). You can use a temporary local consent flow or a tiny helper page; store only the final refresh token as a secret.
++5. Create a **Secret Manager** secret for each item from `.env.example`.
++
++## Deploy (from console)
++1. Go to **Cloud Run → Create service**.
++2. Choose **Deploy one revision from a container**.
++3. Connect this GitHub repo to Cloud Build or provide a container URL after building (either is OK). For a first run, you can use Cloud Build from source → Dockerfile in root.
++4. Set **Environment variables** (better: mount secrets). Provide all keys from `.env.example`.
++5. Allow **unauthenticated invocations** for public endpoints (or restrict to the GPT action’s IPs later).
++6. Deploy. Copy the service URL — this is your `APP_BASE_URL` (e.g., `https://story.being.marketing`).
++
++## Grant Docs/Drive permissions once
++- Open a newly created doc and confirm the owner is `shareyourbeing@gmail.com`.
++- If needed, adjust the Drive sharing defaults:
++  - Initially: editable by link, but with copying/printing disabled (configured via Drive file update; the app will set it per purchase).
++  - After **digital** purchase: link-access changes to **commenter**, add buyer's Gmail as **editor** (and optionally invite to transfer ownership if buyer uses consumer Gmail).
++  - After **print** purchase: no change besides background processing.
++
+diff --git a/server/requirements.txt b/server/requirements.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..b1399dd653c8af04b9938387362c95a8fb614731
+--- /dev/null
++++ b/server/requirements.txt
+@@ -0,0 +8 @@
++fastapi==0.115.0
++uvicorn==0.30.6
++google-api-python-client==2.142.0
++google-auth==2.35.0
++google-auth-oauthlib==1.2.1
++pydantic==2.9.2
++python-dotenv==1.0.1
++requests==2.32.3
+diff --git a/server/Dockerfile b/server/Dockerfile
+new file mode 100644
+index 0000000000000000000000000000000000000000..e1080c843098ae42d591b5dea63ebf85dd5cf4db
+--- /dev/null
++++ b/server/Dockerfile
+@@ -0,0 +22 @@
++# Minimal Python image for Cloud Run
++FROM python:3.11-slim
++
++WORKDIR /app
++
++# System deps for google auth / requests if needed
++RUN apt-get update && apt-get install -y --no-install-recommends     ca-certificates  && rm -rf /var/lib/apt/lists/*
++
++# Install python deps
++COPY server/requirements.txt ./server/requirements.txt
++RUN pip install --no-cache-dir -r server/requirements.txt
++
++# Copy app
++COPY server ./server
++
++# Env
++ENV PYTHONUNBUFFERED=1     PORT=8080
++
++EXPOSE 8080
++
++# Start
++CMD ["uvicorn", "server.main:app", "--host", "0.0.0.0", "--port", "8080"]
+diff --git a/.env.example b/.env.example
+new file mode 100644
+index 0000000000000000000000000000000000000000..a2297847dbaded3e7750655e5a80d2431fabdc01
+--- /dev/null
++++ b/.env.example
+@@ -0,0 +24 @@
++# === Google Auth (act as shareyourbeing@gmail.com) ===
++GOOGLE_CLIENT_ID=
++GOOGLE_CLIENT_SECRET=
++GOOGLE_REFRESH_TOKEN=
++
++# Template Google Doc (tabs-enabled template)
++GOOGLE_TEMPLATE_DOC_ID=1pcDRA-PfSyhsYO7ikT_JGQeHopFHsLzLZcDybWvf5wA
++
++# App base URL (Cloud Run)
++APP_BASE_URL=https://story.being.marketing
++
++# === Gumroad ===
++GUMROAD_DIGITAL_PRODUCT_ID=
++GUMROAD_PRINT_PRODUCT_ID=
++GUMROAD_WEBHOOK_SECRET=
++
++# === Peecho ===
++PEECHO_MERCHANT_API_KEY=
++PEECHO_OFFERINGS_SOFTCOVER_ID=6735753
++PEECHO_OFFERINGS_HARDCOVER_ID=6735762
++
++# === Misc ===
++# Comma-separated list of allowed GPT action origins (optional)
++ALLOWED_ORIGINS=*
+diff --git a/server/config.py b/server/config.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..32cfa6aac6bcb27e554ddd91f49f04a2243e0d49
+--- /dev/null
++++ b/server/config.py
+@@ -0,0 +24 @@
++# Configuration reader for environment variables.
++# Keep all sensitive values outside of code; rely on environment or Secret Manager in Cloud Run.
++
++from pydantic import BaseModel
++import os
++
++class Settings(BaseModel):
++    google_client_id: str = os.getenv("GOOGLE_CLIENT_ID", "")
++    google_client_secret: str = os.getenv("GOOGLE_CLIENT_SECRET", "")
++    google_refresh_token: str = os.getenv("GOOGLE_REFRESH_TOKEN", "")
++    google_template_doc_id: str = os.getenv("GOOGLE_TEMPLATE_DOC_ID", "")
++    app_base_url: str = os.getenv("APP_BASE_URL", "")
++
++    gumroad_digital_product_id: str = os.getenv("GUMROAD_DIGITAL_PRODUCT_ID", "")
++    gumroad_print_product_id: str = os.getenv("GUMROAD_PRINT_PRODUCT_ID", "")
++    gumroad_webhook_secret: str = os.getenv("GUMROAD_WEBHOOK_SECRET", "")
++
++    peecho_merchant_api_key: str = os.getenv("PEECHO_MERCHANT_API_KEY", "")
++    peecho_offering_softcover_id: str = os.getenv("PEECHO_OFFERINGS_SOFTCOVER_ID", "")
++    peecho_offering_hardcover_id: str = os.getenv("PEECHO_OFFERINGS_HARDCOVER_ID", "")
++
++    allowed_origins: str = os.getenv("ALLOWED_ORIGINS", "*")
++
++settings = Settings()
+diff --git a/server/models.py b/server/models.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f68e82567456057cf564b98fff18fb42bc5069a8
+--- /dev/null
++++ b/server/models.py
+@@ -0,0 +46 @@
++# Pydantic request/response models for the API.
++from pydantic import BaseModel, Field
++from typing import List, Optional, Dict, Any
++
++class QAItem(BaseModel):
++    question: str
++    # Optional answer text; only provided if the user explicitly allows invented answers.
++    answer: Optional[str] = None
++
++class Chapter(BaseModel):
++    title: str
++    intro: Optional[str] = None
++    questions: List[QAItem] = Field(default_factory=list)
++
++class CreateBookContentRequest(BaseModel):
++    # The language code for content (e.g., 'ru', 'en', 'uk', ...).
++    language: str
++    # Book title and optional author.
++    title: str
++    author: Optional[str] = None
++    # Starter prompts (3–6 gentle prompts before chapters).
++    starting_prompts: List[str] = Field(default_factory=list)
++    # 3–6 chapters with 6–12 meaning-first questions each.
++    chapters: List[Chapter] = Field(default_factory=list)
++    # Whether answers are invented by GPT (allowed by the user).
++    contains_invented_answers: bool = False
++    # Arbitrary meta (optional).
++    meta: Dict[str, Any] = Field(default_factory=dict)
++
++class CreateBookLinkRequest(BaseModel):
++    language: str
++    title: str
++    author: Optional[str] = None
++
++class CreateDocResponse(BaseModel):
++    doc_id: str
++    # Editor link (book tab first), and memo tab link pre-opened (t.0 is the memo tab).
++    editor_link: str
++    memo_tab_link: str
++
++class ValidationReport(BaseModel):
++    doc_id: str
++    ok: bool
++    issues: List[str] = Field(default_factory=list)
++    warnings: List[str] = Field(default_factory=list)
++    summary: str = ""
+diff --git a/server/google_api.py b/server/google_api.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..a99899c097bd47e3fc2c9a0ab6d28ac58fec41d5
+--- /dev/null
++++ b/server/google_api.py
+@@ -0,0 +184 @@
++# Google API helper functions.
++# NOTE: These are intentionally minimal stubs with clear TODOs to keep architecture stable.
++
++from __future__ import annotations
++from typing import Dict, List, Optional
++import requests
++from google.oauth2.credentials import Credentials
++from googleapiclient.discovery import build
++from .config import settings
++from .models import Chapter, QAItem
++
++SCOPES = [
++    "https://www.googleapis.com/auth/documents",
++    "https://www.googleapis.com/auth/drive",
++    "https://www.googleapis.com/auth/drive.file",
++    "https://www.googleapis.com/auth/cloud-translation",
++]
++
++def _exchange_refresh_token() -> Credentials:
++    """Exchange the stored refresh token for fresh credentials.
++    The app acts as shareyourbeing@gmail.com.
++    """
++    # NOTE: We use the installed app token endpoint to exchange a refresh token.
++    token_url = "https://oauth2.googleapis.com/token"
++    data = {
++        "client_id": settings.google_client_id,
++        "client_secret": settings.google_client_secret,
++        "grant_type": "refresh_token",
++        "refresh_token": settings.google_refresh_token,
++    }
++    resp = requests.post(token_url, data=data, timeout=30)
++    resp.raise_for_status()
++    tokens = resp.json()
++    # Build Credentials object
++    return Credentials(
++        token=tokens.get("access_token"),
++        refresh_token=settings.google_refresh_token,
++        token_uri=token_url,
++        client_id=settings.google_client_id,
++        client_secret=settings.google_client_secret,
++        scopes=SCOPES,
++    )
++
++def _docs_service(creds: Credentials):
++    return build("docs", "v1", credentials=creds, cache_discovery=False)
++
++def _drive_service(creds: Credentials):
++    return build("drive", "v3", credentials=creds, cache_discovery=False)
++
++def _translate_service(creds: Credentials):
++    # Cloud Translation (v2) uses a key or OAuth; for OAuth we call the REST endpoint manually or use discovery.
++    # For simplicity, translation is left as a TODO and should be added in the next patch.
++    return None
++
++def create_doc_from_template(title: str) -> Dict[str, str]:
++    """Make a copy of the template Doc and return {'doc_id', 'editor_link'}.
++    """
++    creds = _exchange_refresh_token()
++    drive = _drive_service(creds)
++    file_metadata = {"name": title}
++    copy = drive.files().copy(
++        fileId=settings.google_template_doc_id,
++        body=file_metadata
++    ).execute()
++    doc_id = copy["id"]
++
++    # Make link-editable initially (writers by link). We'll further restrict copy/print later.
++    # NOTE: The detailed fine-grained restrictions will be implemented in a later patch.
++    permission = {
++        "type": "anyone",
++        "role": "writer",
++        "allowFileDiscovery": False,
++    }
++    drive.permissions().create(fileId=doc_id, body=permission).execute()
++
++    editor_link = f"https://docs.google.com/document/d/{doc_id}/edit"
++    return {"doc_id": doc_id, "editor_link": editor_link}
++
++def replace_placeholders(doc_id: str, title: str, author: Optional[str]) -> None:
++    """Replace placeholders {{TITLE}}, {{AUTHOR}}, <TITLE>, <AUTHOR> throughout the document.
++    """
++    creds = _exchange_refresh_token()
++    docs = _docs_service(creds)
++
++    author_value = author or ""
++
++    requests_body = [
++        # Replace curly placeholders
++        {"replaceAllText": {
++            "containsText": {"text": "{{TITLE}}", "matchCase": True},
++            "replaceText": title
++        }},
++        {"replaceAllText": {
++            "containsText": {"text": "{{AUTHOR}}", "matchCase": True},
++            "replaceText": author_value
++        }},
++        # Replace angle placeholders
++        {"replaceAllText": {
++            "containsText": {"text": "<TITLE>", "matchCase": True},
++            "replaceText": title
++        }},
++        {"replaceAllText": {
++            "containsText": {"text": "<AUTHOR>", "matchCase": True},
++            "replaceText": author_value
++        }},
++    ]
++
++    docs.documents().batchUpdate(
++        documentId=doc_id,
++        body={"requests": requests_body}
++    ).execute()
++
++def append_structure_book_tab(doc_id: str, language: str, starting_prompts: List[str], chapters: List[Chapter]) -> None:
++    """Append the starter prompts and chapters/questions to the **book tab**.
++
++    Implementation note:
++    - The template already contains two tabs (book + memo). We only append content at the end of the book tab.
++    - For now we rely on simple **insertText** requests.
++    - TODO: refine with specific heading styles and table of contents markers.
++    """
++    creds = _exchange_refresh_token()
++    docs = _docs_service(creds)
++    # Fetch current end index
++    doc = docs.documents().get(documentId=doc_id).execute()
++    end_index = doc.get("body", {}).get("content", [])[-1].get("endIndex", 1)
++
++    requests_body = []
++
++    def add_paragraph(text: str, named_style_type: str = "NORMAL_TEXT"):
++        requests_body.append({
++            "insertText": {"text": text + "\n", "location": {"index": end_index}}
++        })
++        requests_body.append({
++            "updateParagraphStyle": {
++                "range": {"startIndex": end_index, "endIndex": end_index + len(text) + 1},
++                "paragraphStyle": {"namedStyleType": named_style_type},
++                "fields": "namedStyleType"
++            }
++        })
++
++    # H1: "Стартовые вопросы" (localized will come via Translate in a later patch)
++    add_paragraph("Стартовые вопросы", "HEADING_1")
++    for i, q in enumerate(starting_prompts, 1):
++        add_paragraph(f"{i}. {q}")
++
++    # Chapters
++    for ch in chapters:
++        add_paragraph(ch.title, "HEADING_1")
++        if ch.intro:
++            add_paragraph(ch.intro)
++        for idx, qa in enumerate(ch.questions, 1):
++            add_paragraph(f"{idx}. {qa.question}")
++            # Reserve approx. 8 lines for the answer (simple underscores as placeholders)
++            if qa.answer:
++                add_paragraph(qa.answer)
++            else:
++                add_paragraph("________________________________________")
++                add_paragraph("________________________________________")
++                add_paragraph("________________________________________")
++                add_paragraph("________________________________________")
++                add_paragraph("________________________________________")
++                add_paragraph("________________________________________")
++                add_paragraph("________________________________________")
++                add_paragraph("________________________________________")
++
++    if requests_body:
++        docs.documents().batchUpdate(documentId=doc_id, body={"requests": requests_body}).execute()
++
++def memo_tab_link(doc_id: str) -> str:
++    """Return the 'memo' tab link. In the template, t.0 is the memo tab."""
++    return f"https://docs.google.com/document/d/{doc_id}/edit?tab=t.0"
++
++def validate_doc_structure(doc_id: str) -> Dict[str, List[str] | bool | str]:
++    """Lightweight validation stub.
++    TODO: Implement deeper checks (headings present, ToC exists, placeholders replaced).
++    """
++    # For MVP, return ok=True to unblock flow; detailed validation will arrive in a later patch.
++    return {
++        "doc_id": doc_id,
++        "ok": True,
++        "issues": [],
++        "warnings": ["Validation is a stub; deeper checks pending."],
++        "summary": "Created via template; placeholders replaced; content appended (assumed)."
++    }
+diff --git a/server/main.py b/server/main.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..da638c7f2a7e34eb6379c546d977092b9776a7c9
+--- /dev/null
++++ b/server/main.py
+@@ -0,0 +75 @@
++# FastAPI app exposing endpoints for GPT actions and back-office flows.
++from fastapi import FastAPI, HTTPException
++from fastapi.middleware.cors import CORSMiddleware
++from .config import settings
++from .models import (
++    CreateBookContentRequest, CreateBookLinkRequest, CreateDocResponse, ValidationReport
++)
++from . import google_api
++
++app = FastAPI(title="Existential Companion — Story Builder API")
++
++# Simple CORS (can be restricted later)
++origins = ["*"] if settings.allowed_origins == "*" else [o.strip() for o in settings.allowed_origins.split(",")]
++app.add_middleware(
++    CORSMiddleware,
++    allow_origins=origins,
++    allow_credentials=True,
++    allow_methods=["*"],
++    allow_headers=["*"],
++)
++
++@app.get("/healthz")
++def healthz():
++    return {"ok": True}
++
++@app.post("/api/create_book_with_content", response_model=CreateDocResponse)
++def create_book_with_content(payload: CreateBookContentRequest):
++    """Create a Google Doc from the template, replace placeholders, and append content.
++    Returns both the editor link and the memo tab link.
++    """
++    if not payload.title:
++        raise HTTPException(status_code=400, detail="title is required")
++    if not payload.language:
++        raise HTTPException(status_code=400, detail="language is required")
++
++    copy = google_api.create_doc_from_template(payload.title)
++    doc_id = copy["doc_id"]
++
++    # Replace placeholders in both styles.
++    google_api.replace_placeholders(doc_id, payload.title, payload.author)
++
++    # Append content to the book tab.
++    google_api.append_structure_book_tab(
++        doc_id=doc_id,
++        language=payload.language,
++        starting_prompts=payload.starting_prompts,
++        chapters=payload.chapters,
++    )
++
++    editor_link = copy["editor_link"]
++    memo_link = google_api.memo_tab_link(doc_id)
++    return CreateDocResponse(doc_id=doc_id, editor_link=editor_link, memo_tab_link=memo_link)
++
++@app.post("/api/create_book_link", response_model=CreateDocResponse)
++def create_book_link(payload: CreateBookLinkRequest):
++    """Create a Google Doc from the template and return links, without appending content yet."""
++    if not payload.title:
++        raise HTTPException(status_code=400, detail="title is required")
++    if not payload.language:
++        raise HTTPException(status_code=400, detail="language is required")
++
++    copy = google_api.create_doc_from_template(payload.title)
++    doc_id = copy["doc_id"]
++
++    # Replace placeholders in both styles.
++    google_api.replace_placeholders(doc_id, payload.title, payload.author)
++
++    editor_link = copy["editor_link"]
++    memo_link = google_api.memo_tab_link(doc_id)
++    return CreateDocResponse(doc_id=doc_id, editor_link=editor_link, memo_tab_link=memo_link)
++
++@app.get("/api/validate/{doc_id}", response_model=ValidationReport)
++def validate(doc_id: str):
++    report = google_api.validate_doc_structure(doc_id)
++    return ValidationReport(**report)
