@@ -1,4 +1,4 @@
-name: "Apply /apply-main (ultimate tolerant)"
+name: Apply files from comment (robust)
 
 on:
   issue_comment:
@@ -9,141 +9,72 @@ permissions:
   pull-requests: write
 
 jobs:
-  apply-main:
-    if: ${{ startsWith(github.event.comment.body, '/apply-main') }}
+  apply-files:
+    if: startsWith(github.event.comment.body, '/apply-files ')
     runs-on: ubuntu-latest
     steps:
-      - name: "Check out"
+      - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
 
-      - name: "Parse & normalize diff (in github-script)"
-        id: prep
+      - name: Parse comment and write files
+        id: parse
         uses: actions/github-script@v7
         with:
           script: |
-            const body = context.payload.comment.body || "";
-            const lines = body.split(/\r?\n/);
-            // Title on first line after /apply-main
-            const first = (lines[0] || "").trim();
-            const title = first.replace(/^\/apply-main\s*/, "") || "apply patch from /apply-main";
-            // Find fenced ```diff or ```patch
-            const isFenceStart = s => /^```\s*(diff|patch)\s*$/i.test(s.trim());
-            let start = lines.findIndex(isFenceStart);
-            let end = -1;
-            if (start >= 0) {
-              for (let i = start + 1; i < lines.length; i++) {
-                if (/^```\s*$/.test(lines[i].trim())) { end = i; break; }
+            const fs = require('fs');
+            const path = require('path');
+            const body = context.payload.comment.body;
+            // Find fenced blocks like ```file:relative/path\n<content>\n```
+            const re = /```file:([\w\-./]+)\n([\s\S]*?)```/g;
+            let match;
+            let written = [];
+            while ((match = re.exec(body)) !== null) {
+              const rel = match[1].trim();
+              const content = match[2].replace(/\r\n/g, "\n"); // normalize newlines
+              if (rel.includes('..')) {
+                core.setFailed(`Refusing to write outside repo: ${rel}`);
+                process.exit(1);
               }
+              const abs = path.join(process.cwd(), rel);
+              fs.mkdirSync(path.dirname(abs), { recursive: true });
+              fs.writeFileSync(abs, content, 'utf8');
+              written.push(rel);
             }
-            let diff = "";
-            if (start >= 0 && end > start) {
-              diff = lines.slice(start + 1, end).join("\n");
+            if (written.length === 0) {
+              core.setFailed('No ```file:<path>``` blocks found in comment.');
+              process.exit(1);
             }
-            // Fallback: raw unified diff from first "diff --git "
-            if (!diff.trim()) {
-              const rawStart = lines.findIndex(l => /^diff --git /.test(l));
-              if (rawStart >= 0) diff = lines.slice(rawStart).join("\n");
-            }
-            if (!/^diff --git /.test(diff.trim())) {
-              core.setFailed("No diff found. Provide fenced ```diff/```patch or raw unified diff starting with 'diff --git'.");
-              return;
-            }
-            // Normalize CRLF→LF
-            diff = diff.replace(/\r/g, "");
-            // Auto-add index line for new files without index
-            const crypto = require("crypto");
-            const parts = diff.split(/^diff --git /m);
-            const out = [parts[0]];
-            for (let i = 1; i < parts.length; i++) {
-              let sec = "diff --git " + parts[i];
-              const hasNew = /\nnew file mode\s+\d+/.test(sec);
-              const hasIndex = /\nindex\s+[0-9a-f]{40}\.\.[0-9a-f]{40}/.test(sec);
-              if (hasNew && !hasIndex) {
-                // Collect added content from hunks
-                const lns = sec.split(/\n/);
-                let content = "";
-                for (const ln of lns) {
-                  if (ln.startsWith("+++ ")) continue;
-                  if (ln.startsWith("--- ")) continue;
-                  if (ln.startsWith("@@")) continue;
-                  if (ln === "\\ No newline at end of file") continue;
-                  if (ln.startsWith("+")) content += ln.slice(1) + "\n";
-                }
-                const size = Buffer.byteLength(content, "utf8");
-                const header = `blob ${size}\0`;
-                const sha = crypto.createHash("sha1").update(header).update(content).digest("hex");
-                sec = sec.replace(/(\nnew file mode\s+\d+)(?![\s\S]*?\nindex\s)/, `$1\nindex 0000000000000000000000000000000000000000..${sha}`);
-              }
-              out.push(sec);
-            }
-            const finalDiff = out.join("");
-            core.setOutput("title", title);
-            core.setOutput("diff_b64", Buffer.from(finalDiff, "utf8").toString("base64"));
+            core.setOutput('written', JSON.stringify(written));
 
-      - name: "Save diff to file"
+      - name: Commit & push
         run: |
-          echo "${{ steps.prep.outputs.diff_b64 }}" | base64 -d > patch.diff
-          echo "---- PATCH PREVIEW ----"
-          head -n 40 patch.diff || true
-          echo "-----------------------"
-
-      - name: "Detect if patch touches workflow files"
-        id: detect
-        run: |
-          awk '/^diff --git a\//{print $4}' patch.diff | sed 's#^b/##' > files.txt || true
-          echo "Files changed:"; cat files.txt || true
-          if grep -qE '^\.github/workflows/' files.txt; then
-            echo "TOUCHES_WORKFLOWS=true" >> $GITHUB_ENV
+          if [ -n "$(git status --porcelain)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -A
+            title="$(echo "${{ github.event.comment.body }}" | head -n1 | sed 's|/apply-files ||')"
+            if [ -z "$title" ]; then title="apply-files"; fi
+            git commit -m "apply-files: $title"
+            git push
           else
-            echo "TOUCHES_WORKFLOWS=false" >> $GITHUB_ENV
-          fi
+            echo "No changes to commit."
 
-      - name: "Apply patch directly to default branch"
-        if: env.TOUCHES_WORKFLOWS == 'false'
-        run: |
-          git fetch origin "${{ github.event.repository.default_branch }}"
-          git checkout -B "${{ github.event.repository.default_branch }}" "origin/${{ github.event.repository.default_branch }}" || git checkout "${{ github.event.repository.default_branch }}"
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if ! git apply --whitespace=fix patch.diff; then
-            if ! git apply --reject --whitespace=fix patch.diff; then
-              echo "::error::Failed to apply patch"; exit 1;
-            fi
-          fi
-          git add -A
-          git commit -m "${{ steps.prep.outputs.title }}"
-          git push origin "HEAD:${{ github.event.repository.default_branch }}"
-
-      - name: "Create branch and PR (workflow files present)"
-        if: env.TOUCHES_WORKFLOWS == 'true'
-        run: |
-          BRANCH="apply/${{ github.run_id }}-${{ github.run_attempt }}"
-          git fetch origin "${{ github.event.repository.default_branch }}"
-          git checkout -B "${{ github.event.repository.default_branch }}" "origin/${{ github.event.repository.default_branch }}" || git checkout "${{ github.event.repository.default_branch }}"
-          git checkout -b "$BRANCH"
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if ! git apply --whitespace=fix patch.diff; then
-            if ! git apply --reject --whitespace=fix patch.diff; then
-              echo "::error::Failed to apply patch"; exit 1;
-            fi
-          fi
-          git add -A
-          git commit -m "${{ steps.prep.outputs.title }}"
-          git push origin "$BRANCH"
-          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
-
-      - name: "Open Pull Request"
-        if: env.TOUCHES_WORKFLOWS == 'true'
+      - name: Report back
+        if: always()
         uses: actions/github-script@v7
         with:
           script: |
-            const {owner, repo} = context.repo;
-            const title = `${{ steps.prep.outputs.title }}`;
-            const head  = process.env.BRANCH;
-            const base  = context.payload.repository.default_branch;
-            const body  = `Automated from ${context.payload.comment.html_url}`;
-            const pr = await github.rest.pulls.create({owner, repo, title, head, base, body, draft: false});
-            core.notice(`PR opened: ${pr.data.html_url}`);
+            const written = core.getInput('written') || '[]';
+            const files = JSON.parse(written);
+            const msg = files.length 
+              ? `✅ Applied files: \n\n- ${files.join('\n- ')}`
+              : `⚠️ No files applied.`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue ? context.payload.issue.number : context.payload.comment.issue_url.split('/').pop(),
+              body: msg
+            });
