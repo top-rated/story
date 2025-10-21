@@ -1,4 +1,4 @@
-name: Apply /apply-main (ultimate tolerant: diff/patch/raw + normalize + auto-index + PR for workflows)
+name: "Apply /apply-main (ultimate tolerant)"
 
 on:
   issue_comment:
@@ -13,23 +13,23 @@ jobs:
     if: ${{ startsWith(github.event.comment.body, '/apply-main') }}
     runs-on: ubuntu-latest
     steps:
-      - name: Check out
+      - name: "Check out"
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Parse comment → title + diff (tolerant)
+      - name: "Parse & normalize diff (in github-script)"
         id: prep
         uses: actions/github-script@v7
         with:
           script: |
-            const body = context.payload.comment.body || '';
+            const body = context.payload.comment.body || "";
             const lines = body.split(/\r?\n/);
-            // Title
-            const first = (lines[0] || '').trim();
-            const title = first.replace(/^\/apply-main\s*/, '') || 'apply patch from /apply-main';
-            // Try fenced blocks: ```diff or ```patch
-            const isFenceStart = (s) => /^```\s*(diff|patch)\s*$/i.test(s.trim());
+            // Title on first line after /apply-main
+            const first = (lines[0] || "").trim();
+            const title = first.replace(/^\/apply-main\s*/, "") || "apply patch from /apply-main";
+            // Find fenced ```diff or ```patch
+            const isFenceStart = s => /^```\s*(diff|patch)\s*$/i.test(s.trim());
             let start = lines.findIndex(isFenceStart);
             let end = -1;
             if (start >= 0) {
@@ -37,128 +37,97 @@ jobs:
                 if (/^```\s*$/.test(lines[i].trim())) { end = i; break; }
               }
             }
-            let diff = '';
+            let diff = "";
             if (start >= 0 && end > start) {
-              diff = lines.slice(start + 1, end).join('\n');
+              diff = lines.slice(start + 1, end).join("\n");
             }
-            // Fallback: raw diff starting at first "diff --git "
+            // Fallback: raw unified diff from first "diff --git "
             if (!diff.trim()) {
               const rawStart = lines.findIndex(l => /^diff --git /.test(l));
-              if (rawStart >= 0) {
-                diff = lines.slice(rawStart).join('\n');
-              }
+              if (rawStart >= 0) diff = lines.slice(rawStart).join("\n");
             }
-            // Final validation
             if (!/^diff --git /.test(diff.trim())) {
-              core.setFailed('No diff found. Provide a fenced ```diff (or ```patch) block, or paste a raw unified diff starting with "diff --git".');
+              core.setFailed("No diff found. Provide fenced ```diff/```patch or raw unified diff starting with 'diff --git'.");
               return;
             }
-            core.setOutput('title', title);
-            core.setOutput('diff_b64', Buffer.from(diff, 'utf8').toString('base64'));
-
-      - name: Save diff to file (LF endings)
-        run: |
-          echo "${{ steps.prep.outputs.diff_b64 }}" | base64 -d | sed 's/\r$//' > patch.diff
-          echo '---- PATCH PREVIEW (first 40) ----'
-          head -n 40 patch.diff || true
-          echo '----------------------------------'
-
-      - name: Normalize diff (auto-add index for new files)
-        id: norm
-        shell: bash
-        run: |
-          set -euo pipefail
-          node - << 'NODE'
-          const fs = require('fs');
-          const crypto = require('crypto');
-          const input = fs.readFileSync('patch.diff','utf8').replace(/\r/g,'');
-          const sections = input.split(/^diff --git /m);
-          const out = [];
-          out.push(sections[0]); // preamble if any
-          for (let i = 1; i < sections.length; i++) {
-            let sec = 'diff --git ' + sections[i];
-            const hasNewFile = /\nnew file mode\s+\d+/.test(sec);
-            const hasIndex   = /\nindex\s+[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}/.test(sec);
-            if (hasNewFile && !hasIndex) {
-              // compute content of new file: collect '+' lines from hunks (skip '+++ b/...')
-              const lines = sec.split(/\n/);
-              let content = '';
-              for (const line of lines) {
-                if (line.startsWith('+++ ')) continue; // header
-                if (line.startsWith('--- ')) continue; // header
-                if (line.startsWith('diff --git ')) continue;
-                if (line.startsWith('@@')) continue;   // hunk header
-                if (line === '\\ No newline at end of file') continue;
-                if (line.startsWith('+')) content += line.slice(1) + '\n';
+            // Normalize CRLF→LF
+            diff = diff.replace(/\r/g, "");
+            // Auto-add index line for new files without index
+            const crypto = require("crypto");
+            const parts = diff.split(/^diff --git /m);
+            const out = [parts[0]];
+            for (let i = 1; i < parts.length; i++) {
+              let sec = "diff --git " + parts[i];
+              const hasNew = /\nnew file mode\s+\d+/.test(sec);
+              const hasIndex = /\nindex\s+[0-9a-f]{40}\.\.[0-9a-f]{40}/.test(sec);
+              if (hasNew && !hasIndex) {
+                // Collect added content from hunks
+                const lns = sec.split(/\n/);
+                let content = "";
+                for (const ln of lns) {
+                  if (ln.startsWith("+++ ")) continue;
+                  if (ln.startsWith("--- ")) continue;
+                  if (ln.startsWith("@@")) continue;
+                  if (ln === "\\ No newline at end of file") continue;
+                  if (ln.startsWith("+")) content += ln.slice(1) + "\n";
+                }
+                const size = Buffer.byteLength(content, "utf8");
+                const header = `blob ${size}\0`;
+                const sha = crypto.createHash("sha1").update(header).update(content).digest("hex");
+                sec = sec.replace(/(\nnew file mode\s+\d+)(?![\s\S]*?\nindex\s)/, `$1\nindex 0000000000000000000000000000000000000000..${sha}`);
               }
-              // compute git blob sha1
-              const size = Buffer.byteLength(content, 'utf8');
-              const header = `blob ${size}\0`;
-              const sha = crypto.createHash('sha1').update(header).update(content).digest('hex');
-              // insert index line after 'new file mode ...'
-              sec = sec.replace(/(\nnew file mode\s+\d+)(?![\s\S]*?\nindex\s)/, `$1\nindex 0000000000000000000000000000000000000000..${sha}`);
+              out.push(sec);
             }
-            out.push(sec);
-          }
-          fs.writeFileSync('patch.norm.diff', out.join(''), 'utf8');
-          NODE
-          echo '---- NORMALIZED PATCH PREVIEW (first 40) ----'
-          head -n 40 patch.norm.diff || true
-          echo '--------------------------------------------'
-          # Decide which to use: prefer normalized if it differs and is non-empty
-          if ! cmp -s patch.diff patch.norm.diff; then
-            echo "PATCH_FILE=patch.norm.diff" >> $GITHUB_ENV
-          else
-            echo "PATCH_FILE=patch.diff" >> $GITHUB_ENV
-          fi
+            const finalDiff = out.join("");
+            core.setOutput("title", title);
+            core.setOutput("diff_b64", Buffer.from(finalDiff, "utf8").toString("base64"));
 
-      - name: Detect if patch touches workflow files
-        id: detect
-        shell: bash
+      - name: "Save diff to file"
         run: |
-          set -euo pipefail
-          awk '/^diff --git a\//{print $4}' "$PATCH_FILE" | sed 's#^b/##' > files.txt || true
-          echo 'Files changed:'
-          cat files.txt || true
+          echo "${{ steps.prep.outputs.diff_b64 }}" | base64 -d > patch.diff
+          echo "---- PATCH PREVIEW ----"
+          head -n 40 patch.diff || true
+          echo "-----------------------"
+
+      - name: "Detect if patch touches workflow files"
+        id: detect
+        run: |
+          awk '/^diff --git a\//{print $4}' patch.diff | sed 's#^b/##' > files.txt || true
+          echo "Files changed:"; cat files.txt || true
           if grep -qE '^\.github/workflows/' files.txt; then
             echo "TOUCHES_WORKFLOWS=true" >> $GITHUB_ENV
           else
             echo "TOUCHES_WORKFLOWS=false" >> $GITHUB_ENV
           fi
 
-      - name: Apply patch directly to default branch
+      - name: "Apply patch directly to default branch"
         if: env.TOUCHES_WORKFLOWS == 'false'
-        shell: bash
         run: |
-          set -euo pipefail
           git fetch origin "${{ github.event.repository.default_branch }}"
           git checkout -B "${{ github.event.repository.default_branch }}" "origin/${{ github.event.repository.default_branch }}" || git checkout "${{ github.event.repository.default_branch }}"
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # Try apply; if fails, retry with --reject
-          if ! git apply --whitespace=fix "$PATCH_FILE"; then
-            if ! git apply --reject --whitespace=fix "$PATCH_FILE"; then
-              echo '::error::Failed to apply patch'; exit 1;
+          if ! git apply --whitespace=fix patch.diff; then
+            if ! git apply --reject --whitespace=fix patch.diff; then
+              echo "::error::Failed to apply patch"; exit 1;
             fi
           fi
           git add -A
           git commit -m "${{ steps.prep.outputs.title }}"
           git push origin "HEAD:${{ github.event.repository.default_branch }}"
 
-      - name: Create branch and PR (workflow files present)
+      - name: "Create branch and PR (workflow files present)"
         if: env.TOUCHES_WORKFLOWS == 'true'
-        shell: bash
         run: |
-          set -euo pipefail
           BRANCH="apply/${{ github.run_id }}-${{ github.run_attempt }}"
           git fetch origin "${{ github.event.repository.default_branch }}"
           git checkout -B "${{ github.event.repository.default_branch }}" "origin/${{ github.event.repository.default_branch }}" || git checkout "${{ github.event.repository.default_branch }}"
           git checkout -b "$BRANCH"
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if ! git apply --whitespace=fix "$PATCH_FILE"; then
-            if ! git apply --reject --whitespace=fix "$PATCH_FILE"; then
-              echo '::error::Failed to apply patch'; exit 1;
+          if ! git apply --whitespace=fix patch.diff; then
+            if ! git apply --reject --whitespace=fix patch.diff; then
+              echo "::error::Failed to apply patch"; exit 1;
             fi
           fi
           git add -A
@@ -166,13 +135,13 @@ jobs:
           git push origin "$BRANCH"
           echo "BRANCH=$BRANCH" >> $GITHUB_ENV
 
-      - name: Open Pull Request
+      - name: "Open Pull Request"
         if: env.TOUCHES_WORKFLOWS == 'true'
         uses: actions/github-script@v7
         with:
           script: |
             const {owner, repo} = context.repo;
-            const title = '${{ steps.prep.outputs.title }}';
+            const title = `${{ steps.prep.outputs.title }}`;
             const head  = process.env.BRANCH;
             const base  = context.payload.repository.default_branch;
             const body  = `Automated from ${context.payload.comment.html_url}`;
