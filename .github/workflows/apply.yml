@@ -29,7 +29,9 @@ jobs:
             const body = context.payload.comment.body || '';
             const b64 = Buffer.from(body, 'utf8').toString('base64');
             core.setOutput('comment_b64', b64);
-            const firstLine = body.split(/\r?\n/)[0] || '';
+            const firstLine = body.split(/
+?
+/)[0] || '';
             const title = firstLine.replace(/^\/apply-main\s*/, '') || 'apply patch from /apply-main';
             core.setOutput('title', title);
 
@@ -45,26 +47,31 @@ jobs:
           awk 'BEGIN{code=0}                /^```diff[[:space:]]*$/ {code=1; next}                /^```[[:space:]]*$/ { if(code){ code=0; exit } }                code { print }' comment.txt > patch.diff
 
           if [ ! -s patch.diff ]; then
-            echo "::error::No fenced ```diff block found in the comment."
+            echo '::error::No fenced ```diff block found in the comment.'
+            echo 'Make sure your comment looks like:'
+            echo '/apply-main <title>'
+            echo '```diff'
+            echo '<unified git diff>'
+            echo '```'
             exit 1
           fi
 
-          echo "---- PATCH PREVIEW ----"
+          echo '---- PATCH PREVIEW ----'
           head -n 40 patch.diff || true
-          echo "-----------------------"
+          echo '-----------------------'
 
       - name: Detect if patch touches workflow files
         id: detect
         shell: bash
         run: |
           set -euo pipefail
-          sed -n -E 's/^diff --git a\/[^ ]+ b\/(.+)$/\1/p' patch.diff > files.txt || true
+          sed -n -E 's/^diff --git a\/[^ ]+ b\/(.+)$//p' patch.diff > files.txt || true
           if grep -qE '^\.github/workflows/' files.txt; then
             echo "TOUCHES_WORKFLOWS=true" >> $GITHUB_ENV
           else
             echo "TOUCHES_WORKFLOWS=false" >> $GITHUB_ENV
           fi
-          echo "Files changed:"
+          echo 'Files changed:'
           cat files.txt || true
 
       - name: Apply patch directly to default branch
