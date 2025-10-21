@@ -1,4 +1,4 @@
-name: Apply /apply-main to default branch
+name: Apply /apply-main (direct to default branch or PR for workflows)
 
 on:
   issue_comment:
@@ -7,32 +7,27 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  workflows: write
 
 jobs:
   apply-main:
-    # Run only if the comment's FIRST line starts with /apply-main
     if: ${{ startsWith(github.event.comment.body, '/apply-main') }}
     runs-on: ubuntu-latest
     steps:
       - name: Check out
         uses: actions/checkout@v4
         with:
-          persist-credentials: true
           fetch-depth: 0
 
-      - name: Figure out default branch
+      - name: Determine default branch
         run: echo "DEFAULT=${{ github.event.repository.default_branch }}" >> $GITHUB_ENV
 
-      - name: Parse comment → patch
+      - name: Parse comment → patch + title
         id: parse
         shell: bash
         run: |
           set -euo pipefail
-          # Write whole comment into a file
           printf "%s" "${{ github.event.comment.body }}" > comment.txt
 
-          # Extract the first line and strip the command prefix to get the commit title
           TITLE_RAW="$(head -n1 comment.txt)"
           TITLE="${TITLE_RAW#'/apply-main '}"
           if [ -z "$TITLE" ] || [ "$TITLE" = "/apply-main" ]; then
@@ -40,35 +35,82 @@ jobs:
           fi
           echo "TITLE=$TITLE" >> $GITHUB_ENV
 
-          # Extract fenced diff block marked as ```diff ... ```
+          # Extract fenced diff block
           awk 'BEGIN{code=0}                /^```diff/{code=1;next}                /^```/{if(code){code=0;exit}}                code{print}' comment.txt > patch.diff
 
           if [ ! -s patch.diff ]; then
-            echo "::error::No diff block found (```diff ... ```)"
+            echo "::error::No ```diff fenced block found in comment"
             exit 1
           fi
 
-          # Optional: show a summary
-          echo "---- PATCH HEAD ----"
+          echo "---- PATCH PREVIEW ----"
           head -n 40 patch.diff || true
-          echo "--------------------"
+          echo "-----------------------"
 
-      - name: Apply patch
+      - name: Detect if patch touches workflow files
+        id: detect
         shell: bash
         run: |
           set -euo pipefail
+          # Collect target paths from diff headers
+          grep -E '^diff --git a/.+ b/.+' patch.diff | sed -E 's#^diff --git a/[^ ]+ b/##' > files.txt
+          if grep -qE '^\.github/workflows/' files.txt; then
+            echo "TOUCHES_WORKFLOWS=true" >> $GITHUB_ENV
+          else
+            echo "TOUCHES_WORKFLOWS=false" >> $GITHUB_ENV
+          fi
+          echo "Files changed:"
+          cat files.txt || true
 
-          # Prepare default branch
+      - name: Apply patch directly to default branch
+        if: env.TOUCHES_WORKFLOWS == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
           git fetch origin "$DEFAULT"
           git checkout -B "$DEFAULT" "origin/$DEFAULT" || git checkout "$DEFAULT"
 
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Try applying the diff
           git apply --check --whitespace=fix patch.diff
           git apply --whitespace=fix patch.diff
 
           git add -A
           git commit -m "${TITLE}"
           git push origin "HEAD:$DEFAULT"
+
+      - name: Create branch and PR (workflow files present)
+        if: env.TOUCHES_WORKFLOWS == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BRANCH="apply/${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
+
+          git fetch origin "$DEFAULT"
+          git checkout -B "$DEFAULT" "origin/$DEFAULT" || git checkout "$DEFAULT"
+          git checkout -b "$BRANCH"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git apply --check --whitespace=fix patch.diff
+          git apply --whitespace=fix patch.diff
+
+          git add -A
+          git commit -m "${TITLE}"
+          git push origin "$BRANCH"
+
+      - name: Open Pull Request
+        if: env.TOUCHES_WORKFLOWS == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const {owner, repo} = context.repo;
+            const title = process.env.TITLE || 'apply patch from /apply-main';
+            const head  = process.env.BRANCH;
+            const base  = process.env.DEFAULT;
+            const body  = `Automated from ${context.payload.comment.html_url}`;
+            const pr = await github.rest.pulls.create({owner, repo, title, head, base, body, draft: false});
+            core.notice(`PR opened: ${pr.data.html_url}`);
