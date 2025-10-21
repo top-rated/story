@@ -1,7 +1,0 @@
-README.md
-.gitignore
-.env.example
-app/__init__.py
-app/config.py
-app/main.py
-requirements.txt
