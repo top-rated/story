@@ -1,71 +1,10 @@
-name: Apply files from comment (robust, no-reply)
+name: placeholder
 
 on:
-  issue_comment:
-    types: [created, edited]
-
-permissions:
-  contents: write
-  issues: write
-  pull-requests: write
+  workflow_dispatch:
 
 jobs:
-  apply-files:
-    if: startsWith(github.event.comment.body, '/apply-files')
+  ok:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          fetch-depth: 0
-
-      - name: Parse comment and write files
-        id: parse
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const path = require('path');
-            const body = context.payload.comment.body;
-            // capture fenced blocks like ```file:path
-<content>
-```
-            const re = /```file:([\w\-./]+)\n([\s\S]*?)```/g;
-            let match;
-            let written = [];
-            while ((match = re.exec(body)) !== null) {
-              const rel = match[1].trim();
-              const content = match[2].replace(/\r\n/g, "\n");
-              if (rel.includes('..')) {
-                core.setFailed(`Refusing to write outside repo: ${rel}`);
-                process.exit(1);
-              }
-              const abs = path.join(process.cwd(), rel);
-              fs.mkdirSync(path.dirname(abs), { recursive: true });
-              fs.writeFileSync(abs, content, 'utf8');
-              written.push(rel);
-            }
-            if (written.length === 0) {
-              core.setFailed('No ```file:<path>``` blocks found in comment.');
-              process.exit(1);
-            }
-            core.setOutput('written', written.join('\n'));
-
-      - name: Commit & push
-        run: |
-          if [ -n "$(git status --porcelain)" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add -A
-            title="$(echo "${{ github.event.comment.body }}" | head -n1 | sed 's|/apply-files *||')"
-            if [ -z "$title" ]; then title="apply-files"; fi
-            git commit -m "apply-files: $title"
-            git push
-          else
-            echo "No changes to commit."
-
-      - name: Print summary
-        run: |
-          echo "Applied files:"
-          echo "${{ steps.parse.outputs.written }}"
+      - run: echo "apply.yml is now valid; use apply-files.yml for real changes."
