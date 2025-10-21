@@ -1,0 +1,7 @@
+diff --git a/APPLY_OK.txt b/APPLY_OK.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..9766475a4185a151dc9d56d614ffb9aaea3bfd42
+--- /dev/null
++++ b/APPLY_OK.txt
+@@ -0,0 +1 @@
++ok
