@@ -2,68 +2,73 @@ name: Apply /apply-main to default branch
 
 on:
   issue_comment:
-    types:
-      - created
-      - edited
+    types: [created, edited]
 
 permissions:
   contents: write
   pull-requests: write
+  workflows: write
 
 jobs:
   apply-main:
-    # Запускаем джоб только если первый ряд комментария начинается с /apply-main
+    # Run only if the comment's FIRST line starts with /apply-main
     if: ${{ startsWith(github.event.comment.body, '/apply-main') }}
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
+      - name: Check out
         uses: actions/checkout@v4
         with:
+          persist-credentials: true
           fetch-depth: 0
 
-      - name: Extract title and diff from comment
-        id: extract
+      - name: Figure out default branch
+        run: echo "DEFAULT=${{ github.event.repository.default_branch }}" >> $GITHUB_ENV
+
+      - name: Parse comment → patch
+        id: parse
         shell: bash
-        env:
-          BODY: ${{ github.event.comment.body }}
         run: |
-          set -e
-          # Заголовок коммита = всё после "/apply-main "
-          title="$(printf "%s" "$BODY" | head -n1 | sed -E 's#^/apply-main[[:space:]]*##')"
-          printf 'title=%s\n' "$title" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          # Write whole comment into a file
+          printf "%s" "${{ github.event.comment.body }}" > comment.txt
 
-          # Вырезаем ПЕРВЫЙ блок с ```diff ... ```
-          awk '
-            tolower($0) ~ /^```[[:space:]]*diff[[:space:]]*$/ && !inside { inside=1; next }
-            /^```/ && inside { inside=0; exit }
-            inside { print }
-          ' <<< "$BODY" > patch.diff
+          # Extract the first line and strip the command prefix to get the commit title
+          TITLE_RAW="$(head -n1 comment.txt)"
+          TITLE="${TITLE_RAW#'/apply-main '}"
+          if [ -z "$TITLE" ] || [ "$TITLE" = "/apply-main" ]; then
+            TITLE="apply patch from /apply-main"
+          fi
+          echo "TITLE=$TITLE" >> $GITHUB_ENV
 
-          # Проверка, что diff есть
-          test -s patch.diff || { echo "No diff block found"; exit 1; }
+          # Extract fenced diff block marked as ```diff ... ```
+          awk 'BEGIN{code=0}                /^```diff/{code=1;next}                /^```/{if(code){code=0;exit}}                code{print}' comment.txt > patch.diff
 
-          echo "Preview:"
-          head -n 20 patch.diff || true
+          if [ ! -s patch.diff ]; then
+            echo "::error::No diff block found (```diff ... ```)"
+            exit 1
+          fi
 
-      - name: Apply patch and push to default branch
+          # Optional: show a summary
+          echo "---- PATCH HEAD ----"
+          head -n 40 patch.diff || true
+          echo "--------------------"
+
+      - name: Apply patch
         shell: bash
-        env:
-          DEFAULT: ${{ github.event.repository.default_branch }}
-          TITLE:   ${{ steps.extract.outputs.title }}
         run: |
-          set -euxo pipefail
-          # Готовим main (или другой дефолт)
+          set -euo pipefail
+
+          # Prepare default branch
           git fetch origin "$DEFAULT"
           git checkout -B "$DEFAULT" "origin/$DEFAULT" || git checkout "$DEFAULT"
 
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Пробуем применить diff
+          # Try applying the diff
           git apply --check --whitespace=fix patch.diff
           git apply --whitespace=fix patch.diff
 
           git add -A
-          git commit -m "${TITLE:-apply patch from /apply-main}"
+          git commit -m "${TITLE}"
           git push origin "HEAD:$DEFAULT"
